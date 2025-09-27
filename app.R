@@ -1,5 +1,6 @@
-# Commit 5: add Numeric vs Categorical tab (boxplots + Welch t-test + checks)
+# Commit 6: visual polish, About modal, better labels/validation, plot downloads
 library(shiny)
+library(bslib)      # theme
 library(dplyr)
 library(tidyr)
 library(readxl)
@@ -8,6 +9,7 @@ library(stringr)
 library(janitor)
 library(ggplot2)
 library(forcats)
+library(scales)
 
 # ---------- Load & clean ----------
 raw <- readxl::read_excel("data/DATA2x02_survey_2025_Responses.xlsx")
@@ -26,6 +28,7 @@ stopifnot(all(req_cols %in% names(dat)))
 
 to_num <- function(x) readr::parse_number(as.character(x))
 is_zero_text <- function(x) str_detect(x, "\\b(none|no|never|zero|nil|don.?t)\\b")
+fmt_p <- function(p) ifelse(is.na(p), NA, ifelse(p < .001, "<0.001", sprintf("%.3f", p)))
 
 dat <- dat %>%
   transmute(
@@ -37,7 +40,6 @@ dat <- dat %>%
     study_raw      = .data[[req_cols[6]]],
     wam_raw        = .data[[req_cols[7]]],
     
-    # ---- cleaned categoricals (for Two Categorical tab) ----
     grade_clean = {
       g <- str_to_lower(str_squish(as.character(grade_raw)))
       case_when(
@@ -82,7 +84,6 @@ dat <- dat %>%
       )
     } %>% factor(levels = c("No","Yes")),
     
-    # ---- cleaned numerics (for Numeric vs Categorical tab) ----
     study_hours = {
       h <- to_num(study_raw)
       if_else(h < 0 | h > 80, NA_real_, h)
@@ -97,7 +98,6 @@ dat <- dat %>%
     }
   )
 
-# Choice lists
 cat_choices <- c(
   "Grade Aim"          = "grade_clean",
   "Alcohol (Low/High)" = "alcohol_level",
@@ -112,56 +112,89 @@ num_choices <- c(
 )
 
 # ---------- UI ----------
-ui <- fluidPage(
-  titlePanel("DATA2902 Student Survey Explorer"),
-  tabsetPanel(
-    id = "tabs",
-    
-    # --------- Tab 1: Two Categorical ---------
-    tabPanel("Two Categorical",
-             sidebarLayout(
-               sidebarPanel(
-                 helpText("Compare two cleaned categorical variables."),
-                 selectInput("cat1", "First categorical variable:", choices = cat_choices),
-                 selectInput("cat2", "Second categorical variable:", choices = cat_choices, selected = "grade_clean")
-               ),
-               mainPanel(
-                 h4("Contingency Table"),
-                 tableOutput("contingency"),
-                 h4("Test Results"),
-                 verbatimTextOutput("chi_result"),
-                 h4("Visualisation"),
-                 plotOutput("cat_plot", height = 360)
-               )
-             )
-    ),
-    
-    # --------- Tab 2: Numeric vs Categorical ---------
-    tabPanel("Numeric vs Categorical",
-             sidebarLayout(
-               sidebarPanel(
-                 helpText("Pick a numeric outcome and a grouping factor (2 levels)."),
-                 selectInput("num_var", "Numeric variable:", choices = num_choices, selected = "study_hours"),
-                 selectInput("grp_var", "Grouping variable:", choices = cat_choices, selected = "sleep_group"),
-                 uiOutput("level_picker") # shows when grp has > 2 levels
-               ),
-               mainPanel(
-                 h4("Group Summary"),
-                 tableOutput("num_summary"),
-                 h4("Assumption Checks"),
-                 verbatimTextOutput("assumptions"),
-                 h4("Test Results"),
-                 verbatimTextOutput("ttest_out"),
-                 h4("Visualisation"),
-                 plotOutput("num_plot", height = 360)
-               )
-             )
-    )
+theme <- bslib::bs_theme(
+  version = 5, bootswatch = "flatly",
+  base_font = bslib::font_google("Inter")
+)
+
+ui <- page_navbar(
+  title  = "DATA2902 Student Survey Explorer",
+  theme  = theme,
+  collapsible = TRUE,
+  nav("Two Categorical",
+      layout_sidebar(
+        sidebar = sidebar(
+          helpText("Compare two cleaned categorical variables."),
+          selectInput("cat1", "First categorical variable:", choices = cat_choices),
+          selectInput("cat2", "Second categorical variable:", choices = cat_choices, selected = "grade_clean"),
+          hr(),
+          downloadButton("dl_cat_plot", "Download plot (PNG)")
+        ),
+        card(
+          card_header("Contingency Table"),
+          tableOutput("contingency")
+        ),
+        card(
+          card_header("Test Results"),
+          verbatimTextOutput("chi_result")
+        ),
+        card(
+          card_header("Visualisation"),
+          plotOutput("cat_plot", height = "360px")
+        )
+      )
+  ),
+  nav("Numeric vs Categorical",
+      layout_sidebar(
+        sidebar = sidebar(
+          helpText("Pick a numeric outcome and a grouping factor (2 levels)."),
+          selectInput("num_var", "Numeric variable:", choices = num_choices, selected = "study_hours"),
+          selectInput("grp_var", "Grouping variable:", choices = cat_choices, selected = "sleep_group"),
+          uiOutput("level_picker"),
+          hr(),
+          downloadButton("dl_num_plot", "Download plot (PNG)")
+        ),
+        card(
+          card_header("Group Summary"),
+          tableOutput("num_summary")
+        ),
+        card(
+          card_header("Assumption Checks"),
+          verbatimTextOutput("assumptions")
+        ),
+        card(
+          card_header("Test Results"),
+          verbatimTextOutput("ttest_out")
+        ),
+        card(
+          card_header("Visualisation"),
+          plotOutput("num_plot", height = "360px")
+        )
+      )
+  ),
+  nav_menu("Help",
+           nav_item(actionLink("about_btn", "About / Data cleaning"))
   )
 )
 
 # ---------- Server ----------
 server <- function(input, output, session) {
+  
+  observeEvent(input$about_btn, {
+    showModal(modalDialog(
+      title = "About / Data cleaning",
+      easyClose = TRUE, size = "l",
+      tagList(
+        p("This app uses selected variables from the DATA2X02 student survey (2025)."),
+        tags$ul(
+          tags$li("Numeric cleaning: parsed text to numbers; clamped implausible values (e.g., study 0–80 h/wk, sleep 3–14 h/day, WAM 40–100)."),
+          tags$li("Categoricals: collapsed to interpretable levels (e.g., Alcohol Low ≤5 vs High >5)."),
+          tags$li("Assumption checks are reported for context; primary tests are Fisher/Chi-squared (cat×cat) and Welch t-test (num×cat).")
+        ),
+        p(em("Note: This is a voluntary convenience sample; results are descriptive and not population estimates."))
+      )
+    ))
+  })
   
   # ===== Tab 1: Two categorical =====
   data_cat <- reactive({
@@ -169,7 +202,7 @@ server <- function(input, output, session) {
       select(cat1 = all_of(input$cat1),
              cat2 = all_of(input$cat2)) %>%
       drop_na(cat1, cat2)
-    validate(need(nrow(d) > 0, "No rows after cleaning for this variable pair."))
+    validate(need(nrow(d) > 0, "No rows after cleaning for this variable pair. Try another selection."))
     d
   })
   
@@ -182,36 +215,40 @@ server <- function(input, output, session) {
     chi_try <- suppressWarnings(chisq.test(tab, correct = FALSE))
     if (any(chi_try$expected < 5)) {
       out <- fisher.test(tab)
-      list(
-        "Test used" = "Fisher's Exact (small expected counts)",
-        "p-value"   = out$p.value
-      )
+      cat("Test used: Fisher's Exact (small expected counts)\n",
+          "p-value:", fmt_p(out$p.value), "\n")
     } else {
-      list(
-        "Test used"  = "Chi-squared test of independence",
-        "Statistic"  = unname(chi_try$statistic),
-        "df"         = unname(chi_try$parameter),
-        "p-value"    = chi_try$p.value
-      )
+      cat("Test used: Chi-squared test of independence\n",
+          "Statistic:", round(unname(chi_try$statistic), 3), "\n",
+          "df:", unname(chi_try$parameter), "\n",
+          "p-value:", fmt_p(chi_try$p.value), "\n")
     }
   })
   
-  output$cat_plot <- renderPlot({
+  cat_plot_obj <- reactive({
     ggplot(data_cat(), aes(x = cat1, fill = cat2)) +
       geom_bar(position = "fill") +
-      scale_y_continuous(labels = scales::percent) +
+      scale_y_continuous(labels = percent_format()) +
+      scale_fill_brewer(palette = "Set2") +
       labs(
         x = names(cat_choices)[match(input$cat1, cat_choices)],
         y = "Proportion",
         fill = names(cat_choices)[match(input$cat2, cat_choices)]
       ) +
       theme_minimal(base_size = 13) +
-      theme(axis.text.x = element_text(angle = 20, hjust = 1))
+      theme(axis.text.x = element_text(angle = 20, hjust = 1),
+            panel.grid.minor = element_blank())
   })
   
-  # ===== Tab 2: Numeric vs Categorical =====
+  output$cat_plot <- renderPlot({ cat_plot_obj() })
+  output$dl_cat_plot <- downloadHandler(
+    filename = function() paste0("cat_plot_", Sys.Date(), ".png"),
+    content = function(file) {
+      ggsave(file, plot = cat_plot_obj(), width = 8, height = 4.5, dpi = 150)
+    }
+  )
   
-  # show a level picker if grouping has > 2 levels
+  # ===== Tab 2: Numeric vs Categorical =====
   output$level_picker <- renderUI({
     g <- dat[[input$grp_var]]
     levs <- levels(factor(g))
@@ -220,25 +257,19 @@ server <- function(input, output, session) {
         selectInput("lvl_a", "Level A:", choices = levs, selected = levs[1]),
         selectInput("lvl_b", "Level B:", choices = levs, selected = levs[2])
       )
-    } else {
-      NULL
-    }
+    } else NULL
   })
   
-  # make two-level factor if needed
   data_numgrp <- reactive({
     x <- dat[[input$num_var]]
     g <- dat[[input$grp_var]]
-    
     df <- tibble::tibble(value = x, group = g) %>% drop_na()
-    
     levs <- levels(factor(df$group))
     if (length(levs) > 2) {
       req(input$lvl_a, input$lvl_b, input$lvl_a != input$lvl_b)
-      df <- df %>%
-        filter(group %in% c(input$lvl_a, input$lvl_b)) %>%
-        mutate(group = fct_drop(group))
+      df <- df %>% filter(group %in% c(input$lvl_a, input$lvl_b)) %>% mutate(group = fct_drop(group))
     }
+    validate(need(n_distinct(df$group) == 2, "Please choose two distinct levels for the grouping variable."))
     df
   })
   
@@ -247,50 +278,46 @@ server <- function(input, output, session) {
       group_by(group) %>%
       summarise(
         n = n(),
-        mean = mean(value),
-        sd = sd(value),
+        mean   = mean(value),
+        sd     = sd(value),
         median = median(value),
-        iqr = IQR(value),
+        iqr    = IQR(value),
         .groups = "drop"
       )
   }, digits = 2)
   
   output$assumptions <- renderPrint({
     df <- data_numgrp()
-    glev <- levels(factor(df$group))
-    # Shapiro per group (just as a guide; t-test is robust, we’ll also run Wilcoxon)
     sw <- by(df$value, df$group, shapiro.test)
     vt <- var.test(value ~ group, data = df)
-    list(
-      "Shapiro–Wilk normality (per group)" = lapply(sw, function(z) c(W = unname(z$statistic), p = z$p.value)),
-      "F-test equal variances"             = c(F = unname(vt$statistic), df1 = vt$parameter[1], df2 = vt$parameter[2], p = vt$p.value)
-    )
+    cat("Shapiro–Wilk normality (per group):\n")
+    purrr::iwalk(sw, ~cat(" ", .y, ": W=", round(unname(.x$statistic),3),
+                          ", p=", fmt_p(.x$p.value), "\n", sep=""))
+    cat("\nF-test equal variances:\n F=", round(unname(vt$statistic),3),
+        ", df1=", vt$parameter[1], ", df2=", vt$parameter[2],
+        ", p=", fmt_p(vt$p.value), "\n", sep = "")
   })
   
   output$ttest_out <- renderPrint({
     df <- data_numgrp()
-    # Welch t-test (primary) + Wilcoxon (robustness)
     t_out <- t.test(value ~ group, data = df, var.equal = FALSE)
     w_out <- wilcox.test(value ~ group, data = df, exact = FALSE)
-    list(
-      "Welch two-sample t-test" = list(
-        statistic = unname(t_out$statistic),
-        df        = unname(t_out$parameter),
-        conf_int  = t_out$conf.int,
-        p_value   = t_out$p.value
-      ),
-      "Wilcoxon rank-sum" = list(
-        W       = unname(w_out$statistic),
-        p_value = w_out$p.value
-      )
-    )
+    cat("Welch two-sample t-test:\n",
+        " t = ", round(unname(t_out$statistic),2),
+        ", df = ", round(unname(t_out$parameter),1),
+        ", 95% CI = [", round(t_out$conf.int[1],2), ", ", round(t_out$conf.int[2],2), "]",
+        ", p = ", fmt_p(t_out$p.value), "\n", sep = "")
+    cat("\nWilcoxon rank-sum:\n",
+        " W = ", format(unname(w_out$statistic), big.mark=","),
+        ", p = ", fmt_p(w_out$p.value), "\n", sep = "")
   })
   
-  output$num_plot <- renderPlot({
+  num_plot_obj <- reactive({
     df <- data_numgrp()
     ggplot(df, aes(group, value, fill = group)) +
       geom_boxplot(alpha = 0.7, outlier.shape = NA, colour = "grey30") +
       geom_jitter(width = 0.15, alpha = 0.45, size = 1.5) +
+      scale_fill_brewer(palette = "Set2") +
       labs(
         x = names(cat_choices)[match(input$grp_var, cat_choices)],
         y = names(num_choices)[match(input$num_var, num_choices)]
@@ -300,6 +327,14 @@ server <- function(input, output, session) {
             panel.grid.minor = element_blank(),
             panel.grid.major.x = element_blank())
   })
+  
+  output$num_plot <- renderPlot({ num_plot_obj() })
+  output$dl_num_plot <- downloadHandler(
+    filename = function() paste0("num_plot_", Sys.Date(), ".png"),
+    content = function(file) {
+      ggsave(file, plot = num_plot_obj(), width = 8, height = 4.5, dpi = 150)
+    }
+  )
 }
 
 shinyApp(ui, server)
