@@ -1,5 +1,53 @@
 # DATA2x02 Student Survey Explorer
 
+
+An interactive **Shiny** application for analysing and visualising results from the **DATA2x02 Student Survey (2025)**.  
+The app allows students to explore cleaned categorical and numeric data, run independence and group comparison tests, and generate clear, professional-looking visuals.
+
+---
+
+## 🚀 Features
+
+### 🔹 Two Categorical Variables
+- Build contingency tables of any two cleaned categorical variables.  
+- Automatic selection of statistical test:
+  - **Chi-squared test of independence** when valid (with **Cramér’s V** effect size).  
+  - **Fisher’s exact test** when expected counts are too small.  
+  - **Monte Carlo Fisher** fallback if needed.  
+- Hypotheses and plain-English interpretations are displayed.  
+- Visualisation: **stacked proportion bar chart** (clean design, no cluttered labels).  
+
+### 🔹 Numeric vs Categorical
+- Compare numeric outcomes across two groups.  
+- Group summaries: _n, mean, sd, median, IQR_.  
+- Assumption checks:
+  - **Shapiro–Wilk** test for normality (per group).  
+  - **Variance F-test** (contextual only).  
+- Two tests shown side-by-side:
+  - **Welch’s two-sample t-test** (default, robust).  
+  - **Wilcoxon rank-sum test** (non-parametric).  
+- Boxplot with jittered points for distribution visualisation.  
+
+### 🔹 Data Dictionary
+- Lists every variable available in the app.  
+- Includes variable type, cleaning rules, and plausible ranges.  
+
+### 🔹 User Experience
+- **Rmd-style flow**: results and plots display top-to-bottom without inner scrollbars.  
+- **Download buttons** for saving plots as PNG.  
+- **p-value badges**: green (<0.05), red (≥0.05), amber (NA).  
+- Modern **bslib theme** with consistent styling.  
+- Guard against selecting the same variable twice.  
+
+---
+
+## 📂 Project Structure
+
+- `app.R` – main Shiny application file.  
+- `data/` – contains the raw Excel survey responses.  
+- `README.md` – project documentation.  
+
+
 ## ▶️ Running the App
 
 Place the survey file at:
