@@ -1,4 +1,4 @@
-# Commit 6: visual polish, About modal, better labels/validation, plot downloads
+# Commit 7: more variables, same-var guard, data dictionary tab
 library(shiny)
 library(bslib)      # theme
 library(dplyr)
@@ -10,12 +10,28 @@ library(janitor)
 library(ggplot2)
 library(forcats)
 library(scales)
+library(purrr)
 
-# ---------- Load & clean ----------
+# ---------- Helpers ----------
+to_num <- function(x) readr::parse_number(as.character(x))
+is_zero_text <- function(x) str_detect(x, "\\b(none|no|never|zero|nil|don.?t)\\b")
+fmt_p <- function(p) ifelse(is.na(p), NA, ifelse(p < .001, "<0.001", sprintf("%.3f", p)))
+normtxt <- function(x) {
+  x <- tolower(paste(x))
+  x <- str_replace_all(x, "[^a-z]+", " ")
+  str_squish(x)
+}
+
+# Safe puller: returns NA_character_ vector if col missing
+get_chr <- function(df, nm) if (nm %in% names(df)) as.character(df[[nm]]) else rep(NA_character_, nrow(df))
+get_num <- function(df, nm) if (nm %in% names(df)) to_num(df[[nm]]) else rep(NA_real_, nrow(df))
+
+# ---------- Load & minimally validate ----------
 raw <- readxl::read_excel("data/DATA2x02_survey_2025_Responses.xlsx")
-dat <- janitor::clean_names(raw)
+dat_raw <- janitor::clean_names(raw)
 
-req_cols <- c(
+# Columns used (some are optional; we check existence)
+cols_core <- c(
   "what_final_grade_are_you_aiming_to_achieve_in_data2x02",
   "how_much_alcohol_do_you_consume_each_week",
   "do_you_submit_assignments_on_time",
@@ -24,22 +40,45 @@ req_cols <- c(
   "how_many_hours_a_week_do_you_spend_studying",
   "what_is_your_wam_weighted_average_mark"
 )
-stopifnot(all(req_cols %in% names(dat)))
+stopifnot(all(cols_core %in% names(dat_raw)))
 
-to_num <- function(x) readr::parse_number(as.character(x))
-is_zero_text <- function(x) str_detect(x, "\\b(none|no|never|zero|nil|don.?t)\\b")
-fmt_p <- function(p) ifelse(is.na(p), NA, ifelse(p < .001, "<0.001", sprintf("%.3f", p)))
+# Optional (best effort)
+c_gender   <- "what_is_your_gender"
+c_year     <- "which_year_of_university_are_you_currently_in"
+c_trans    <- "how_do_you_get_to_university"
+c_living   <- "what_are_your_current_living_arrangements"
+c_payrent  <- "do_you_pay_rent"
+c_age      <- "how_old_are_you"
+c_height   <- "how_tall_are_you"
+c_workhrs  <- "how_many_hours_a_week_on_average_do_you_work_in_paid_employment"
+c_foodsp   <- "what_is_the_average_amount_of_money_you_spend_each_week_on_food_beverages"
+c_video    <- "how_much_time_do_you_spend_on_short_video_apps_like_tiktok_or_reels_every_day"
 
-dat <- dat %>%
+# ---------- Clean to analysis set ----------
+dat <- dat_raw %>%
   transmute(
-    grade_raw      = .data[[req_cols[1]]],
-    alcohol_raw    = .data[[req_cols[2]]],
-    assignment_raw = .data[[req_cols[3]]],
-    exercise_raw   = .data[[req_cols[4]]],
-    sleep_raw      = .data[[req_cols[5]]],
-    study_raw      = .data[[req_cols[6]]],
-    wam_raw        = .data[[req_cols[7]]],
+    # raw pulls (present by contract)
+    grade_raw      = .data[[cols_core[1]]],
+    alcohol_raw    = .data[[cols_core[2]]],
+    assignment_raw = .data[[cols_core[3]]],
+    exercise_raw   = .data[[cols_core[4]]],
+    sleep_raw      = .data[[cols_core[5]]],
+    study_raw      = .data[[cols_core[6]]],
+    wam_raw        = .data[[cols_core[7]]],
     
+    # optional raw pulls
+    gender_raw     = get_chr(dat_raw, c_gender),
+    year_raw       = get_chr(dat_raw, c_year),
+    transport_raw  = get_chr(dat_raw, c_trans),
+    living_raw     = get_chr(dat_raw, c_living),
+    payrent_raw    = get_chr(dat_raw, c_payrent),
+    age_raw        = get_num(dat_raw, c_age),
+    height_raw     = get_num(dat_raw, c_height),
+    workhrs_raw    = get_num(dat_raw, c_workhrs),
+    foodsp_raw     = get_num(dat_raw, c_foodsp),
+    video_raw      = get_num(dat_raw, c_video),
+    
+    # ----------------- CATEGORICALS (clean, collapsed) -----------------
     grade_clean = {
       g <- str_to_lower(str_squish(as.character(grade_raw)))
       case_when(
@@ -72,8 +111,13 @@ dat <- dat %>%
     exercise_group = {
       e <- suppressWarnings(as.numeric(exercise_raw))
       e <- if_else(e < 0 | e > 100, NA_real_, e)
-      if_else(e >= 3, "High (≥3h/wk)", "Low (<3h/wk)")
-    } %>% factor(levels = c("High (≥3h/wk)", "Low (<3h/wk)")),
+      case_when(
+        !is.na(e) & e < 3  ~ "Low (<3h/wk)",
+        !is.na(e) & e >= 6 ~ "High (≥6h/wk)",
+        !is.na(e)          ~ "Moderate (3–5h/wk)",
+        TRUE ~ NA_character_
+      )
+    } %>% factor(levels = c("Low (<3h/wk)","Moderate (3–5h/wk)","High (≥6h/wk)")),
     
     on_time = {
       a <- str_to_lower(str_squish(as.character(assignment_raw)))
@@ -84,6 +128,62 @@ dat <- dat %>%
       )
     } %>% factor(levels = c("No","Yes")),
     
+    gender = {
+      g <- normtxt(gender_raw)
+      case_when(
+        str_detect(g, "\\b(female|woman|girl|she|her|f)\\b") ~ "Female",
+        str_detect(g, "\\b(male|man|boy|he|him|m)\\b")       ~ "Male",
+        g == "" | is.na(g)                                   ~ NA_character_,
+        TRUE                                                 ~ "Other"
+      )
+    } %>% factor(levels = c("Female","Male","Other")),
+    
+    year_uni = {
+      y <- normtxt(year_raw)
+      yn <- suppressWarnings(to_num(year_raw))
+      case_when(
+        !is.na(yn) & yn <= 1 ~ "Year 1",
+        !is.na(yn) & yn == 2 ~ "Year 2",
+        !is.na(yn) & yn >= 3 ~ "Year 3+",
+        str_detect(y, "first")   ~ "Year 1",
+        str_detect(y, "second")  ~ "Year 2",
+        str_detect(y, "third|fourth|fifth|sixth|honour|honor|master|phd|postgrad") ~ "Year 3+",
+        TRUE ~ NA_character_
+      )
+    } %>% factor(levels = c("Year 1","Year 2","Year 3+")),
+    
+    transport = {
+      t <- normtxt(transport_raw)
+      case_when(
+        str_detect(t, "walk|foot|bike|bicycle|cycle|scooter") ~ "Walk/Bike",
+        str_detect(t, "bus|train|tram|light rail|metro|ferry|public") ~ "Public",
+        str_detect(t, "car|drive|uber|taxi|ride share|rideshare")    ~ "Car",
+        t == "" | is.na(t) ~ NA_character_,
+        TRUE ~ "Other"
+      )
+    } %>% factor(levels = c("Walk/Bike","Public","Car","Other")),
+    
+    living = {
+      l <- normtxt(living_raw)
+      case_when(
+        str_detect(l, "parent|family home|home with family|with family") ~ "With parents",
+        str_detect(l, "share|rent|flat|apartment|unit|room|house")       ~ "Share/Rent",
+        str_detect(l, "campus|college|dorm|student hous")                ~ "On-campus",
+        l == "" | is.na(l) ~ NA_character_,
+        TRUE ~ "Other"
+      )
+    } %>% factor(levels = c("With parents","Share/Rent","On-campus","Other")),
+    
+    pays_rent = {
+      r <- normtxt(payrent_raw)
+      case_when(
+        str_detect(r, "^y|yes") ~ "Yes",
+        str_detect(r, "^n|no")  ~ "No",
+        TRUE ~ NA_character_
+      )
+    } %>% factor(levels = c("No","Yes")),
+    
+    # ----------------- NUMERICS (clamped to plausible ranges) -----------------
     study_hours = {
       h <- to_num(study_raw)
       if_else(h < 0 | h > 80, NA_real_, h)
@@ -95,21 +195,41 @@ dat <- dat %>%
     wam = {
       w <- to_num(wam_raw)
       if_else(w < 40 | w > 100, NA_real_, w)
-    }
+    },
+    age = if_else(!is.na(age_raw) & age_raw >= 15 & age_raw <= 80, age_raw, NA_real_),
+    height_cm = if_else(!is.na(height_raw) & height_raw >= 130 & height_raw <= 220, height_raw, NA_real_),
+    work_hours = if_else(!is.na(workhrs_raw) & workhrs_raw >= 0 & workhrs_raw <= 80, workhrs_raw, NA_real_),
+    food_spend = if_else(!is.na(foodsp_raw) & foodsp_raw >= 0 & foodsp_raw <= 1500, foodsp_raw, NA_real_),
+    video_mins = if_else(!is.na(video_raw) & video_raw >= 0 & video_raw <= 600, video_raw, NA_real_)
   )
 
-cat_choices <- c(
-  "Grade Aim"          = "grade_clean",
-  "Alcohol (Low/High)" = "alcohol_level",
-  "Sleep Group"        = "sleep_group",
-  "Exercise Group"     = "exercise_group",
-  "On-time Submission" = "on_time"
+# Choice sets (only include columns that actually exist & have data)
+cat_map <- c(
+  "Grade Aim"              = "grade_clean",
+  "Alcohol (Low/High)"     = "alcohol_level",
+  "Sleep Group"            = "sleep_group",
+  "Exercise Group"         = "exercise_group",
+  "On-time Submission"     = "on_time",
+  "Gender (collapsed)"     = "gender",
+  "Year of University"     = "year_uni",
+  "Transport Mode"         = "transport",
+  "Living Arrangement"     = "living",
+  "Pays Rent (Yes/No)"     = "pays_rent"
 )
-num_choices <- c(
-  "Study Hours / week" = "study_hours",
-  "Sleep Hours / day"  = "sleep_hours",
-  "WAM"                = "wam"
+num_map <- c(
+  "Study Hours / week"     = "study_hours",
+  "Sleep Hours / day"      = "sleep_hours",
+  "WAM"                    = "wam",
+  "Age (years)"            = "age",
+  "Height (cm)"            = "height_cm",
+  "Paid Work Hours / week" = "work_hours",
+  "Food Spend / week ($)"  = "food_spend",
+  "Short-video time / day (mins)" = "video_mins"
 )
+
+has_non_all_na <- function(x) sum(!is.na(x)) > 0
+cat_choices <- cat_map[names(cat_map)[map_lgl(cat_map, ~ has_non_all_na(dat[[.x]]))]]
+num_choices <- num_map[names(num_map)[map_lgl(num_map, ~ has_non_all_na(dat[[.x]]))]]
 
 # ---------- UI ----------
 theme <- bslib::bs_theme(
@@ -126,7 +246,7 @@ ui <- page_navbar(
         sidebar = sidebar(
           helpText("Compare two cleaned categorical variables."),
           selectInput("cat1", "First categorical variable:", choices = cat_choices),
-          selectInput("cat2", "Second categorical variable:", choices = cat_choices, selected = "grade_clean"),
+          selectInput("cat2", "Second categorical variable:", choices = cat_choices, selected = names(cat_choices)[1]),
           hr(),
           downloadButton("dl_cat_plot", "Download plot (PNG)")
         ),
@@ -148,7 +268,7 @@ ui <- page_navbar(
       layout_sidebar(
         sidebar = sidebar(
           helpText("Pick a numeric outcome and a grouping factor (2 levels)."),
-          selectInput("num_var", "Numeric variable:", choices = num_choices, selected = "study_hours"),
+          selectInput("num_var", "Numeric variable:", choices = num_choices, selected = names(num_choices)[1]),
           selectInput("grp_var", "Grouping variable:", choices = cat_choices, selected = "sleep_group"),
           uiOutput("level_picker"),
           hr(),
@@ -172,6 +292,15 @@ ui <- page_navbar(
         )
       )
   ),
+  nav("Data Dictionary",
+      layout_columns(
+        col_widths = c(12),
+        card(
+          card_header("Variables and cleaning rules"),
+          tableOutput("data_dict")
+        )
+      )
+  ),
   nav_menu("Help",
            nav_item(actionLink("about_btn", "About / Data cleaning"))
   )
@@ -180,6 +309,7 @@ ui <- page_navbar(
 # ---------- Server ----------
 server <- function(input, output, session) {
   
+  # About modal
   observeEvent(input$about_btn, {
     showModal(modalDialog(
       title = "About / Data cleaning",
@@ -188,16 +318,27 @@ server <- function(input, output, session) {
         p("This app uses selected variables from the DATA2X02 student survey (2025)."),
         tags$ul(
           tags$li("Numeric cleaning: parsed text to numbers; clamped implausible values (e.g., study 0–80 h/wk, sleep 3–14 h/day, WAM 40–100)."),
-          tags$li("Categoricals: collapsed to interpretable levels (e.g., Alcohol Low ≤5 vs High >5)."),
-          tags$li("Assumption checks are reported for context; primary tests are Fisher/Chi-squared (cat×cat) and Welch t-test (num×cat).")
+          tags$li("Categoricals: collapsed to interpretable levels (e.g., Alcohol: Low ≤5 vs High >5; Sleep: ≥7 vs <7 hours)."),
+          tags$li("Primary tests: Fisher/Chi-squared (cat×cat) and Welch t-test with Wilcoxon check (num×cat).")
         ),
         p(em("Note: This is a voluntary convenience sample; results are descriptive and not population estimates."))
       )
     ))
   })
   
-  # ===== Tab 1: Two categorical =====
+  # ===== Guard: don't allow selecting the same categorical twice =====
+  observeEvent(input$cat1, ignoreInit = TRUE, {
+    # remove the first-selected key from second choices
+    new_choices <- cat_choices
+    if (input$cat1 %in% new_choices) new_choices <- new_choices[new_choices != input$cat1]
+    # keep existing selection if still valid, otherwise pick first available
+    new_selected <- if (!is.null(input$cat2) && input$cat2 %in% new_choices) input$cat2 else new_choices[[1]]
+    updateSelectInput(session, "cat2", choices = new_choices, selected = new_selected)
+  })
+  
+  # ===== Two categorical =====
   data_cat <- reactive({
+    validate(need(input$cat1 != input$cat2, "Please choose two different variables."))
     d <- dat %>%
       select(cat1 = all_of(input$cat1),
              cat2 = all_of(input$cat2)) %>%
@@ -248,7 +389,7 @@ server <- function(input, output, session) {
     }
   )
   
-  # ===== Tab 2: Numeric vs Categorical =====
+  # ===== Numeric vs categorical =====
   output$level_picker <- renderUI({
     g <- dat[[input$grp_var]]
     levs <- levels(factor(g))
@@ -267,7 +408,8 @@ server <- function(input, output, session) {
     levs <- levels(factor(df$group))
     if (length(levs) > 2) {
       req(input$lvl_a, input$lvl_b, input$lvl_a != input$lvl_b)
-      df <- df %>% filter(group %in% c(input$lvl_a, input$lvl_b)) %>% mutate(group = fct_drop(group))
+      df <- df %>% filter(group %in% c(input$lvl_a, input$lvl_b)) %>%
+        mutate(group = fct_drop(group))
     }
     validate(need(n_distinct(df$group) == 2, "Please choose two distinct levels for the grouping variable."))
     df
@@ -335,6 +477,48 @@ server <- function(input, output, session) {
       ggsave(file, plot = num_plot_obj(), width = 8, height = 4.5, dpi = 150)
     }
   )
+  
+  # ===== Data dictionary =====
+  output$data_dict <- renderTable({
+    tibble::tibble(
+      `Display name` = c(
+        names(cat_map), names(num_map)
+      ),
+      `Column (app)` = c(
+        unname(cat_map), unname(num_map)
+      ),
+      `Type` = c(
+        rep("Categorical (cleaned/collapsed)", length(cat_map)),
+        rep("Numeric (clamped to plausible range)", length(num_map))
+      ),
+      `Cleaning notes` = c(
+        "High Distinction / Distinction / Credit / Pass; other or 'Fail' -> NA",
+        "Parsed numeric; 'none/no/never' -> 0; Low ≤5 vs High >5 drinks/wk",
+        "Adequate (≥7h) vs Short (<7h) from numeric sleep hours",
+        "Low <3h, Moderate 3–5h, High ≥6h per week",
+        "Yes/No using robust text patterns (always/usually/… vs late/no)",
+        "Collapsed Male/Female/Other; jokes/empty -> Other/NA",
+        "Year 1 / Year 2 / Year 3+ from numeric or text",
+        "Walk/Bike / Public / Car / Other from text",
+        "With parents / Share-Rent / On-campus / Other from text",
+        "Yes/No from text",
+        "0–80 hours/week kept; else NA",
+        "3–14 hours/day kept; else NA",
+        "40–100 kept; else NA",
+        "15–80 kept; else NA",
+        "130–220 kept; else NA",
+        "0–80 kept; else NA",
+        "0–1500 kept; else NA",
+        "0–600 kept; else NA"
+      )
+    ) %>%
+      # Show only variables that passed availability filter
+      filter(
+        (`Column (app)` %in% c(unname(cat_choices), unname(num_choices)))
+      ) %>%
+      arrange(factor(`Type`, levels = c("Categorical (cleaned/collapsed)","Numeric (clamped to plausible range)")),
+              `Display name`)
+  })
 }
 
 shinyApp(ui, server)
