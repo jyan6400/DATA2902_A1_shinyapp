@@ -113,8 +113,6 @@ This app meets all rubric items:
 - User guide: this README serves as full documentation.  
 - Usability: clean layout, no inner scrollbars, clear navigation.  
 
-**→ Full marks achievable.**
-
 ---
 
 ## ⚠️ Limitations
